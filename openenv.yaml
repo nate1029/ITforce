@@ -2,5 +2,5 @@ spec_version: 1
 name: it_triage_env
 type: space
 runtime: fastapi
-app: main:app
+app: server.app:app
 port: 7860

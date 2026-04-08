@@ -131,7 +131,12 @@ def list_tasks():
     return {"tasks": TASKS}
 
 
-if __name__ == "__main__":
+def run_server():
+    """Entry-point used by `project.scripts` -> `server`."""
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=7860)
+
+
+if __name__ == "__main__":
+    run_server()
