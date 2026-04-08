@@ -131,12 +131,12 @@ def list_tasks():
     return {"tasks": TASKS}
 
 
-def run_server():
-    """Entry-point used by `project.scripts` -> `server`."""
+def main():
+    """Primary server entry-point used by validators and project scripts."""
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=7860)
 
 
 if __name__ == "__main__":
-    run_server()
+    main()

@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-server = "main:run_server"
+server = "main:main"
 
 [project.urls]
 Homepage = "https://huggingface.co/spaces/natz1010/ITforce"
