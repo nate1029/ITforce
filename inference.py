@@ -1,0 +1,140 @@
+"""
+Baseline inference script for IT Support Ticket Triage OpenEnv.
+
+Drives an OpenAI-compatible LLM through all 3 tasks and emits structured
+[START] / [STEP] / [END] logs required by the hackathon validator.
+
+Environment variables
+---------------------
+API_BASE_URL      : LLM API base URL       (default: https://api.openai.com/v1)
+MODEL_NAME        : Model identifier        (default: gpt-3.5-turbo)
+HF_TOKEN          : API key                 (required, no default)
+ENV_URL           : OpenEnv server URL      (default: http://localhost:7860)
+LOCAL_IMAGE_NAME  : Docker image name       (optional, for from_docker_image())
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import requests
+from openai import OpenAI
+
+# ---------------------------------------------------------------------------
+# Configuration from environment variables
+# ---------------------------------------------------------------------------
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-3.5-turbo")
+HF_TOKEN = os.getenv("HF_TOKEN")
+ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
+
+# Optional – if you use from_docker_image():
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+
+VALID_DEPARTMENTS = ["Hardware", "Software", "Network", "Billing"]
+
+SYSTEM_PROMPT = """You are an expert IT support ticket triage assistant.
+Given a support ticket description, you must classify it into exactly one department.
+
+Valid departments: Hardware, Software, Network, Billing
+
+Department definitions:
+- Hardware: Physical device issues — broken screens, keyboards, docking stations, printers, cables.
+- Software: Application bugs, installation failures, software updates, license activation, OS issues.
+- Network: Connectivity problems — Wi-Fi, VPN, DNS, slow file transfers, packet loss, switches.
+- Billing: Invoice errors, subscription renewals, overcharges, payment disputes, pricing questions.
+
+Respond with ONLY the department name. No explanation, no punctuation, no extra text."""
+
+
+def create_client() -> OpenAI:
+    """Create OpenAI client with configured credentials."""
+    if not HF_TOKEN:
+        print("WARNING: HF_TOKEN not set. LLM calls will likely fail.", file=sys.stderr)
+    return OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
+
+
+def get_llm_action(client: OpenAI, observation: str) -> str:
+    """Send observation to LLM and parse the department from the response."""
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": observation},
+        ],
+        temperature=0.0,
+        max_tokens=20,
+    )
+    raw = response.choices[0].message.content.strip()
+
+    for dept in VALID_DEPARTMENTS:
+        if dept.lower() in raw.lower():
+            return dept
+
+    return raw
+
+
+def run_task(client: OpenAI, task_id: str, task_number: int) -> float:
+    """
+    Run a single task end-to-end and emit [START]/[STEP]/[END] logs.
+
+    Returns the final cumulative score (clamped 0–1).
+    """
+    print(f"[START] Task {task_number}")
+
+    resp = requests.post(f"{ENV_URL}/reset", json={"task_id": task_id}, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+
+    observation = data["observation"]
+    total_steps = data["info"]["total_steps"]
+
+    cumulative_reward = 0.0
+
+    for _ in range(total_steps):
+        action = get_llm_action(client, observation)
+
+        step_resp = requests.post(
+            f"{ENV_URL}/step", json={"action": action}, timeout=30
+        )
+        step_resp.raise_for_status()
+        step_data = step_resp.json()
+
+        reward = step_data["reward"]
+        done = step_data["done"]
+        cumulative_reward += reward
+
+        print(f"[STEP] Action: {action}, Reward: {reward}")
+
+        if done:
+            break
+
+        observation = step_data["observation"]
+
+    final_score = round(max(0.0, min(1.0, cumulative_reward)), 2)
+    print(f"[END] Final Score: {final_score}")
+    return final_score
+
+
+def main():
+    """Run inference across all 3 tasks."""
+    client = create_client()
+
+    tasks = [
+        ("task_1", 1),
+        ("task_2", 2),
+        ("task_3", 3),
+    ]
+
+    scores = []
+    for task_id, task_num in tasks:
+        score = run_task(client, task_id, task_num)
+        scores.append(score)
+        print()
+
+    avg = round(sum(scores) / len(scores), 2)
+    print(f"Average Score: {avg}")
+
+
+if __name__ == "__main__":
+    main()
