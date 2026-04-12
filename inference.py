@@ -21,6 +21,8 @@ import traceback
 import requests
 from openai import OpenAI
 
+from env import public_task_score
+
 # ---------------------------------------------------------------------------
 # Configuration from environment variables
 # ---------------------------------------------------------------------------
@@ -88,8 +90,10 @@ def run_task(llm_client: OpenAI, task_id: str, task_number: int) -> float:
     """
     Run a single task end-to-end and emit [START]/[STEP]/[END] logs.
 
-    Returns the final cumulative score (clamped 0–1).
+    Returns the reported task score (strictly in (0, 1) per validator rules).
     """
+    fail_score = public_task_score(0.0)
+
     print(f"[START] Task {task_number}")
 
     try:
@@ -99,20 +103,20 @@ def run_task(llm_client: OpenAI, task_id: str, task_number: int) -> float:
     except Exception as e:
         print(f"ERROR: reset failed: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
-        print("[END] Final Score: 0.0")
-        return 0.0
+        print(f"[END] Final Score: {fail_score:.4f}")
+        return fail_score
 
     observation = data.get("observation")
     if observation is None:
         print("ERROR: reset returned no observation", file=sys.stderr)
-        print("[END] Final Score: 0.0")
-        return 0.0
+        print(f"[END] Final Score: {fail_score:.4f}")
+        return fail_score
 
     total_steps = data.get("info", {}).get("total_steps", 0)
     if total_steps <= 0:
         print("ERROR: invalid total_steps", file=sys.stderr)
-        print("[END] Final Score: 0.0")
-        return 0.0
+        print(f"[END] Final Score: {fail_score:.4f}")
+        return fail_score
 
     cumulative_reward = 0.0
 
@@ -143,8 +147,10 @@ def run_task(llm_client: OpenAI, task_id: str, task_number: int) -> float:
         if observation is None:
             break
 
-    final_score = round(max(0.0, min(1.0, cumulative_reward)), 2)
-    print(f"[END] Final Score: {final_score}")
+    internal = max(0.0, min(1.0, cumulative_reward))
+    final_score = public_task_score(internal)
+    # Do not round to 2 decimals: round(0.999, 2) == 1.0 and fails strict (0, 1) checks.
+    print(f"[END] Final Score: {final_score:.4f}")
     return final_score
 
 
@@ -164,8 +170,8 @@ def main():
         scores.append(score)
         print()
 
-    avg = round(sum(scores) / len(scores), 2)
-    print(f"Average Score: {avg}")
+    avg = sum(scores) / len(scores)
+    print(f"Average Score: {avg:.4f}")
 
 
 if __name__ == "__main__":

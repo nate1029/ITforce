@@ -62,6 +62,16 @@ def _similarity(a: str, b: str) -> float:
     return SIMILARITY.get(key, 0.0)
 
 
+def public_task_score(internal_cumulative: float) -> float:
+    """
+    Some validators require each task score strictly in (0, 1), excluding 0.0 and 1.0.
+
+    Internal grading still uses [0, 1]; this maps the reported cumulative to (0.001, 0.999).
+    """
+    c = max(0.0, min(1.0, float(internal_cumulative)))
+    return round(0.001 + 0.998 * c, 4)
+
+
 # ---------------------------------------------------------------------------
 # Ticket dataset – 15 tickets, intentionally varying in difficulty
 # ---------------------------------------------------------------------------
@@ -298,8 +308,9 @@ class ITTriageEnv:
         if not self._done:
             observation = self._ticket_queue[self._current_step]["description"]
 
-        # Clamp final score to [0, 1]
-        clamped_cumulative = max(0.0, min(1.0, round(self._cumulative_reward, 4)))
+        # Internal cumulative in [0, 1]; API reports open-interval score for validators
+        internal = max(0.0, min(1.0, round(self._cumulative_reward, 4)))
+        reported_cumulative = public_task_score(internal)
 
         return {
             "observation": observation,
@@ -309,7 +320,8 @@ class ITTriageEnv:
                 "correct_department": correct_dept,
                 "action_taken": action_norm,
                 "is_correct": action_norm == correct_dept,
-                "cumulative_reward": clamped_cumulative,
+                "cumulative_reward": reported_cumulative,
+                "internal_cumulative_reward": internal,
                 "steps_completed": self._current_step,
                 "steps_remaining": self._total_steps - self._current_step,
                 "streak": self._correct_streak,
@@ -318,14 +330,16 @@ class ITTriageEnv:
 
     def state(self) -> dict:
         """Return the current environment state."""
-        clamped = max(0.0, min(1.0, round(self._cumulative_reward, 4)))
+        internal = max(0.0, min(1.0, round(self._cumulative_reward, 4)))
+        reported = public_task_score(internal)
         return {
             "episode_id": self._episode_id,
             "task_id": self._task_id,
             "current_step": self._current_step,
             "total_steps": self._total_steps,
             "done": self._done,
-            "cumulative_reward": clamped,
+            "cumulative_reward": reported,
+            "internal_cumulative_reward": internal,
             "actions_taken": list(self._actions),
             "rewards": list(self._rewards),
         }

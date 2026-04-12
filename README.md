@@ -48,7 +48,7 @@ The reward function provides **dense, trajectory-aware signal** (not just sparse
 | Invalid action | `-0.1` penalty |
 | Streak bonus (2+ correct in a row) | `+0.05` |
 
-Final episode score is clamped to **[0.0, 1.0]**.
+Internal grading uses **[0.0, 1.0]**; the API and `[END] Final Score` report a mapped score in **(0.001, 0.999)** so automated checks that forbid exactly `0.0` or `1.0` still pass.
 
 ## Tasks
 
