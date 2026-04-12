@@ -118,7 +118,7 @@ def run_task(llm_client: OpenAI, task_id: str, task_number: int) -> float:
         print(f"[END] Final Score: {fail_score:.4f}")
         return fail_score
 
-    cumulative_reward = 0.0
+    last_step_data = None
 
     for _ in range(total_steps):
         action = get_llm_action(llm_client, observation)
@@ -131,12 +131,11 @@ def run_task(llm_client: OpenAI, task_id: str, task_number: int) -> float:
             step_data = step_resp.json()
             reward = step_data["reward"]
             done = step_data["done"]
+            last_step_data = step_data
         except Exception as e:
             print(f"ERROR: step failed: {e}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
             break
-
-        cumulative_reward += reward
 
         print(f"[STEP] Action: {action}, Reward: {reward}")
 
@@ -147,9 +146,16 @@ def run_task(llm_client: OpenAI, task_id: str, task_number: int) -> float:
         if observation is None:
             break
 
-    internal = max(0.0, min(1.0, cumulative_reward))
-    final_score = public_task_score(internal)
-    # Do not round to 2 decimals: round(0.999, 2) == 1.0 and fails strict (0, 1) checks.
+    # API maps per-step `reward` to (0,1); final task score must come from env cumulative, not sum of mapped steps.
+    if last_step_data and isinstance(last_step_data.get("info"), dict):
+        cr = last_step_data["info"].get("cumulative_reward")
+        if cr is not None:
+            final_score = float(cr)
+        else:
+            final_score = fail_score
+    else:
+        final_score = fail_score
+
     print(f"[END] Final Score: {final_score:.4f}")
     return final_score
 

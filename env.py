@@ -72,6 +72,18 @@ def public_task_score(internal_cumulative: float) -> float:
     return round(0.001 + 0.998 * c, 4)
 
 
+# Step rewards can be -0.1 .. 1.0+; validators that scan every `reward` field reject 0, 1, negatives.
+_STEP_LO = -0.15
+_STEP_HI = 1.05
+
+
+def public_step_reward(raw_step: float) -> float:
+    """Map one step's internal reward to (0.001, 0.999) for strict (0, 1) API checks."""
+    x = max(_STEP_LO, min(_STEP_HI, float(raw_step)))
+    t = (x - _STEP_LO) / (_STEP_HI - _STEP_LO)
+    return round(0.001 + 0.998 * t, 4)
+
+
 # ---------------------------------------------------------------------------
 # Ticket dataset – 15 tickets, intentionally varying in difficulty
 # ---------------------------------------------------------------------------
@@ -311,17 +323,17 @@ class ITTriageEnv:
         # Internal cumulative in [0, 1]; API reports open-interval score for validators
         internal = max(0.0, min(1.0, round(self._cumulative_reward, 4)))
         reported_cumulative = public_task_score(internal)
+        reported_step = public_step_reward(reward)
 
         return {
             "observation": observation,
-            "reward": reward,
+            "reward": reported_step,
             "done": self._done,
             "info": {
                 "correct_department": correct_dept,
                 "action_taken": action_norm,
                 "is_correct": action_norm == correct_dept,
                 "cumulative_reward": reported_cumulative,
-                "internal_cumulative_reward": internal,
                 "steps_completed": self._current_step,
                 "steps_remaining": self._total_steps - self._current_step,
                 "streak": self._correct_streak,
@@ -332,6 +344,7 @@ class ITTriageEnv:
         """Return the current environment state."""
         internal = max(0.0, min(1.0, round(self._cumulative_reward, 4)))
         reported = public_task_score(internal)
+        reported_rewards = [public_step_reward(r) for r in self._rewards]
         return {
             "episode_id": self._episode_id,
             "task_id": self._task_id,
@@ -339,7 +352,6 @@ class ITTriageEnv:
             "total_steps": self._total_steps,
             "done": self._done,
             "cumulative_reward": reported,
-            "internal_cumulative_reward": internal,
             "actions_taken": list(self._actions),
-            "rewards": list(self._rewards),
+            "rewards": reported_rewards,
         }

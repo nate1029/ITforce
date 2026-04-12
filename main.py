@@ -65,7 +65,6 @@ class StateResponse(BaseModel):
     total_steps: int = 0
     done: bool = True
     cumulative_reward: float = 0.0
-    internal_cumulative_reward: Optional[float] = None
     actions_taken: list[str] = []
     rewards: list[float] = []
 
