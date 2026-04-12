@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+import traceback
 import requests
 from openai import OpenAI
 
@@ -51,30 +52,39 @@ def create_client() -> OpenAI:
     """Create OpenAI client with configured credentials."""
     if not HF_TOKEN:
         print("WARNING: HF_TOKEN not set. LLM calls will likely fail.", file=sys.stderr)
-    return OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
+    return OpenAI(api_key=HF_TOKEN or "", base_url=API_BASE_URL)
 
 
-def get_llm_action(client: OpenAI, observation: str) -> str:
+def get_llm_action(llm_client: OpenAI, observation: str) -> str:
     """Send observation to LLM and parse the department from the response."""
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": observation},
-        ],
-        temperature=0.0,
-        max_tokens=20,
-    )
-    raw = response.choices[0].message.content.strip()
+    try:
+        response = llm_client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": observation},
+            ],
+            temperature=0.0,
+            max_tokens=20,
+        )
+        choice = response.choices[0].message
+        raw = (choice.content or "").strip()
+        if not raw:
+            print("WARNING: empty LLM response; using Hardware fallback", file=sys.stderr)
+            return "Hardware"
 
-    for dept in VALID_DEPARTMENTS:
-        if dept.lower() in raw.lower():
-            return dept
+        for dept in VALID_DEPARTMENTS:
+            if dept.lower() in raw.lower():
+                return dept
 
-    return raw
+        return raw
+    except Exception as e:
+        print(f"WARNING: LLM call failed ({e}); using Hardware fallback", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        return "Hardware"
 
 
-def run_task(client: OpenAI, task_id: str, task_number: int) -> float:
+def run_task(llm_client: OpenAI, task_id: str, task_number: int) -> float:
     """
     Run a single task end-to-end and emit [START]/[STEP]/[END] logs.
 
@@ -82,23 +92,43 @@ def run_task(client: OpenAI, task_id: str, task_number: int) -> float:
     """
     print(f"[START] Task {task_number}")
 
-    resp = requests.post(f"{ENV_URL}/reset", json={"task_id": task_id}, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+    try:
+        resp = requests.post(f"{ENV_URL}/reset", json={"task_id": task_id}, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"ERROR: reset failed: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        print("[END] Final Score: 0.0")
+        return 0.0
 
-    observation = data["observation"]
-    total_steps = data["info"]["total_steps"]
+    observation = data.get("observation")
+    if observation is None:
+        print("ERROR: reset returned no observation", file=sys.stderr)
+        print("[END] Final Score: 0.0")
+        return 0.0
+
+    total_steps = data.get("info", {}).get("total_steps", 0)
+    if total_steps <= 0:
+        print("ERROR: invalid total_steps", file=sys.stderr)
+        print("[END] Final Score: 0.0")
+        return 0.0
 
     cumulative_reward = 0.0
 
     for _ in range(total_steps):
-        action = get_llm_action(client, observation)
+        action = get_llm_action(llm_client, observation)
 
-        step_resp = requests.post(
-            f"{ENV_URL}/step", json={"action": action}, timeout=30
-        )
-        step_resp.raise_for_status()
-        step_data = step_resp.json()
+        try:
+            step_resp = requests.post(
+                f"{ENV_URL}/step", json={"action": action}, timeout=30
+            )
+            step_resp.raise_for_status()
+            step_data = step_resp.json()
+        except Exception as e:
+            print(f"ERROR: step failed: {e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            break
 
         reward = step_data["reward"]
         done = step_data["done"]
@@ -109,7 +139,9 @@ def run_task(client: OpenAI, task_id: str, task_number: int) -> float:
         if done:
             break
 
-        observation = step_data["observation"]
+        observation = step_data.get("observation")
+        if observation is None:
+            break
 
     final_score = round(max(0.0, min(1.0, cumulative_reward)), 2)
     print(f"[END] Final Score: {final_score}")
@@ -118,7 +150,7 @@ def run_task(client: OpenAI, task_id: str, task_number: int) -> float:
 
 def main():
     """Run inference across all 3 tasks."""
-    client = create_client()
+    llm_client = create_client()
 
     tasks = [
         ("task_1", 1),
@@ -128,7 +160,7 @@ def main():
 
     scores = []
     for task_id, task_num in tasks:
-        score = run_task(client, task_id, task_num)
+        score = run_task(llm_client, task_id, task_num)
         scores.append(score)
         print()
 
