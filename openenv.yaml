@@ -1,6 +1,99 @@
-spec_version: 1
-name: it_triage_env
-type: space
-runtime: fastapi
-app: server.app:app
-port: 7860
+name: it-triage-env
+version: "1.0.0"
+description: >
+  A real-world IT support ticket triage environment where an AI agent
+  must route incoming helpdesk tickets to the correct department
+  (Hardware, Software, Network, or Billing). Features partial-credit
+  reward shaping, streak bonuses, and penalty for invalid actions.
+
+author: ITforce Team
+license: MIT
+
+tags:
+  - openenv
+  - it-support
+  - triage
+  - classification
+  - real-world
+
+tasks:
+  - id: task_1
+    name: easy
+    difficulty: easy
+    grader: deterministic
+    description: "Route 1 obvious hardware ticket to the correct department."
+    max_steps: 1
+
+  - id: task_2
+    name: medium
+    difficulty: medium
+    grader: deterministic
+    description: "Route 3 standard tickets across different departments."
+    max_steps: 3
+
+  - id: task_3
+    name: hard
+    difficulty: hard
+    grader: deterministic
+    description: "Route 5 tickets including genuinely ambiguous cases that challenge frontier models."
+    max_steps: 5
+
+observation_space:
+  type: object
+  fields:
+    text:
+      type: string
+      description: "The IT support ticket description to triage."
+    task_id:
+      type: string
+      description: "Current task identifier."
+    step_number:
+      type: integer
+      description: "Current step number within the episode."
+    total_steps:
+      type: integer
+      description: "Total steps in this episode."
+    valid_actions:
+      type: array
+      items: string
+      description: "List of valid department names."
+
+action_space:
+  type: object
+  fields:
+    action:
+      type: string
+      description: "Department name: Hardware, Software, Network, or Billing."
+      enum: ["Hardware", "Software", "Network", "Billing"]
+
+reward:
+  type: float
+  range: "(0.0, 1.0)"
+  description: >
+    Per-step reward mapped to strict open interval (0.001, 0.999).
+    Internally: exact match = 1/N, partial credit via department similarity
+    matrix, streak bonus +0.05 for consecutive correct, penalty -0.1 for
+    invalid actions. All values mapped to (0.001, 0.999) before reporting.
+
+endpoints:
+  - path: /reset
+    method: POST
+    description: "Start a fresh episode for a given task_id."
+  - path: /step
+    method: POST
+    description: "Submit an action (department) and advance the episode."
+  - path: /state
+    method: GET
+    description: "Return the current environment state."
+  - path: /tasks
+    method: GET
+    description: "List all available tasks."
+  - path: /health
+    method: GET
+    description: "Health check endpoint."
+
+infrastructure:
+  framework: FastAPI
+  server: uvicorn
+  port: 7860
+  docker: true

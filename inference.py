@@ -10,7 +10,6 @@ API_BASE_URL      : LLM API base URL       (default: https://api.openai.com/v1)
 MODEL_NAME        : Model identifier        (default: gpt-3.5-turbo)
 HF_TOKEN          : API key                 (required, no default)
 ENV_URL           : OpenEnv server URL      (default: http://localhost:7860)
-LOCAL_IMAGE_NAME  : Docker image name       (optional, for from_docker_image())
 """
 
 from __future__ import annotations
@@ -18,10 +17,10 @@ from __future__ import annotations
 import os
 import sys
 import traceback
+from typing import List, Optional
+
 import requests
 from openai import OpenAI
-
-from env import public_task_score
 
 # ---------------------------------------------------------------------------
 # Configuration from environment variables
@@ -30,11 +29,14 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-3.5-turbo")
 HF_TOKEN = os.getenv("HF_TOKEN")
 ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
-
-# Optional – if you use from_docker_image():
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
+BENCHMARK = "it-triage-env"
+
 VALID_DEPARTMENTS = ["Hardware", "Software", "Network", "Billing"]
+
+SCORE_FLOOR = 0.001
+SCORE_CEILING = 0.999
 
 SYSTEM_PROMPT = """You are an expert IT support ticket triage assistant.
 Given a support ticket description, you must classify it into exactly one department.
@@ -50,15 +52,56 @@ Department definitions:
 Respond with ONLY the department name. No explanation, no punctuation, no extra text."""
 
 
+# ---------------------------------------------------------------------------
+# Score clamping — guarantee (0.001, 0.999)
+# ---------------------------------------------------------------------------
+
+def _strict_score(value: float) -> float:
+    score = round(float(value), 4)
+    if score <= SCORE_FLOOR:
+        return SCORE_FLOOR
+    if score >= SCORE_CEILING:
+        return SCORE_CEILING
+    return score
+
+
+# ---------------------------------------------------------------------------
+# Structured log helpers (exact validator format)
+# ---------------------------------------------------------------------------
+
+def log_start(task: str, model: str) -> None:
+    print(f"[START] task={task} env={BENCHMARK} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    action_clean = action.replace("\n", " ").replace("\r", "")[:120]
+    print(
+        f"[STEP] step={step} action={action_clean} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# LLM client
+# ---------------------------------------------------------------------------
+
 def create_client() -> OpenAI:
-    """Create OpenAI client with configured credentials."""
     if not HF_TOKEN:
         print("WARNING: HF_TOKEN not set. LLM calls will likely fail.", file=sys.stderr)
     return OpenAI(api_key=HF_TOKEN or "", base_url=API_BASE_URL)
 
 
 def get_llm_action(llm_client: OpenAI, observation: str) -> str:
-    """Send observation to LLM and parse the department from the response."""
     try:
         response = llm_client.chat.completions.create(
             model=MODEL_NAME,
@@ -86,15 +129,22 @@ def get_llm_action(llm_client: OpenAI, observation: str) -> str:
         return "Hardware"
 
 
-def run_task(llm_client: OpenAI, task_id: str, task_number: int) -> float:
-    """
-    Run a single task end-to-end and emit [START]/[STEP]/[END] logs.
+# ---------------------------------------------------------------------------
+# Task runner
+# ---------------------------------------------------------------------------
 
-    Returns the reported task score (strictly in (0, 1) per validator rules).
-    """
-    fail_score = public_task_score(0.0)
+TASK_NAMES = {"task_1": "easy", "task_2": "medium", "task_3": "hard"}
 
-    print(f"[START] Task {task_number}")
+
+def run_task(llm_client: OpenAI, task_id: str) -> dict:
+    task_name = TASK_NAMES.get(task_id, task_id)
+    rewards: List[float] = []
+    step_count = 0
+    done = False
+    success = False
+    score = SCORE_FLOOR
+
+    log_start(task=task_name, model=MODEL_NAME)
 
     try:
         resp = requests.post(f"{ENV_URL}/reset", json={"task_id": task_id}, timeout=30)
@@ -102,25 +152,24 @@ def run_task(llm_client: OpenAI, task_id: str, task_number: int) -> float:
         data = resp.json()
     except Exception as e:
         print(f"ERROR: reset failed: {e}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
-        print(f"[END] Final Score: {fail_score:.4f}")
-        return fail_score
+        log_end(success=False, steps=0, score=SCORE_FLOOR, rewards=[])
+        return {"task_id": task_id, "score": SCORE_FLOOR, "success": False}
 
     observation = data.get("observation")
     if observation is None:
         print("ERROR: reset returned no observation", file=sys.stderr)
-        print(f"[END] Final Score: {fail_score:.4f}")
-        return fail_score
+        log_end(success=False, steps=0, score=SCORE_FLOOR, rewards=[])
+        return {"task_id": task_id, "score": SCORE_FLOOR, "success": False}
 
     total_steps = data.get("info", {}).get("total_steps", 0)
     if total_steps <= 0:
         print("ERROR: invalid total_steps", file=sys.stderr)
-        print(f"[END] Final Score: {fail_score:.4f}")
-        return fail_score
+        log_end(success=False, steps=0, score=SCORE_FLOOR, rewards=[])
+        return {"task_id": task_id, "score": SCORE_FLOOR, "success": False}
 
     last_step_data = None
 
-    for _ in range(total_steps):
+    for step_num in range(1, total_steps + 1):
         action = get_llm_action(llm_client, observation)
 
         try:
@@ -129,15 +178,16 @@ def run_task(llm_client: OpenAI, task_id: str, task_number: int) -> float:
             )
             step_resp.raise_for_status()
             step_data = step_resp.json()
-            reward = step_data["reward"]
-            done = step_data["done"]
+            reward = float(step_data["reward"])
+            done = bool(step_data["done"])
             last_step_data = step_data
+            rewards.append(reward)
+            step_count = step_num
+            log_step(step=step_num, action=action, reward=reward, done=done, error=None)
         except Exception as e:
             print(f"ERROR: step failed: {e}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
+            log_step(step=step_num, action=action, reward=0.0, done=False, error=str(e))
             break
-
-        print(f"[STEP] Action: {action}, Reward: {reward}")
 
         if done:
             break
@@ -146,40 +196,33 @@ def run_task(llm_client: OpenAI, task_id: str, task_number: int) -> float:
         if observation is None:
             break
 
-    # API maps per-step `reward` to (0,1); final task score must come from env cumulative, not sum of mapped steps.
     if last_step_data and isinstance(last_step_data.get("info"), dict):
         cr = last_step_data["info"].get("cumulative_reward")
         if cr is not None:
-            final_score = float(cr)
+            score = _strict_score(float(cr))
         else:
-            final_score = fail_score
+            score = _strict_score(sum(rewards) / len(rewards)) if rewards else SCORE_FLOOR
+    elif rewards:
+        score = _strict_score(sum(rewards) / len(rewards))
     else:
-        final_score = fail_score
+        score = SCORE_FLOOR
 
-    print(f"[END] Final Score: {final_score:.4f}")
-    return final_score
+    success = done and score > 0.1
+
+    log_end(success=success, steps=step_count, score=score, rewards=rewards)
+    return {"task_id": task_id, "score": score, "success": success}
 
 
-def main():
-    """Run inference across all 3 tasks."""
+def main() -> int:
     llm_client = create_client()
 
-    tasks = [
-        ("task_1", 1),
-        ("task_2", 2),
-        ("task_3", 3),
-    ]
+    tasks = ["task_1", "task_2", "task_3"]
 
-    scores = []
-    for task_id, task_num in tasks:
-        score = run_task(llm_client, task_id, task_num)
-        scores.append(score)
-        print()
+    for task_id in tasks:
+        run_task(llm_client, task_id)
 
-    avg = sum(scores) / len(scores)
-    # Keep stdout to only [START]/[STEP]/[END] lines — some parsers reject extra stdout.
-    print(f"Average Score: {avg:.4f}", file=sys.stderr)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

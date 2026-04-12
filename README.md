@@ -44,11 +44,11 @@ The reward function provides **dense, trajectory-aware signal** (not just sparse
 | Outcome | Reward |
 |---|---|
 | Exact match | `1/N` per ticket (`N` = tickets in task) |
-| Partial credit (related dept) | `similarity × base_reward` (e.g. Hardware→Software = 0.15×) |
+| Partial credit (related dept) | `similarity x base_reward` (e.g. Hardware to Software = 0.15x) |
 | Invalid action | `-0.1` penalty |
 | Streak bonus (2+ correct in a row) | `+0.05` |
 
-Internal grading uses raw step values for logic; **every JSON `reward`, `rewards[]`, and `cumulative_reward`** is mapped into **(0.001, 0.999)** so validators that reject `0.0`, `1.0`, or negative numbers in any score field still pass. `[END] Final Score` uses the API’s final `cumulative_reward`.
+Internal grading uses raw step values for logic; **every JSON `reward`, `rewards[]`, and `cumulative_reward`** is mapped into the strict open interval **(0.001, 0.999)** so validators that reject `0.0`, `1.0`, or negative numbers in any score field will pass.
 
 ## Tasks
 
@@ -62,16 +62,16 @@ Internal grading uses raw step values for logic; **every JSON `reward`, `rewards
 
 | Task | Score |
 |---|---|
-| `task_1` | 1.0 |
-| `task_2` | ~0.99 |
-| `task_3` | ~0.80–1.0 |
+| `task_1` | ~0.999 |
+| `task_2` | ~0.999 |
+| `task_3` | ~0.80-0.999 |
 
 ## API Endpoints
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/` | Environment metadata |
-| `GET` | `/health` | Health check → `{"status": "ok"}` |
+| `GET` | `/health` | Health check -> `{"status": "ok"}` |
 | `POST` | `/reset` | Start new episode: `{"task_id": "task_1"}` |
 | `POST` | `/step` | Submit action: `{"action": "Hardware"}` |
 | `GET` | `/state` | Current episode state |
@@ -109,23 +109,23 @@ python inference.py
 The inference script emits structured logs required by the validator:
 
 ```
-[START] Task 1
-[STEP] Action: Hardware, Reward: 1.0
-[END] Final Score: 1.0
+[START] task=easy env=it-triage-env model=gpt-3.5-turbo
+[STEP] step=1 action=Hardware reward=0.96 done=true error=null
+[END] success=true steps=1 score=0.999 rewards=0.96
 
-[START] Task 2
-[STEP] Action: Software, Reward: 0.33
-[STEP] Action: Network, Reward: 0.33
-[STEP] Action: Billing, Reward: 0.33
-[END] Final Score: 0.99
+[START] task=medium env=it-triage-env model=gpt-3.5-turbo
+[STEP] step=1 action=Software reward=0.40 done=false error=null
+[STEP] step=2 action=Network reward=0.44 done=false error=null
+[STEP] step=3 action=Billing reward=0.44 done=true error=null
+[END] success=true steps=3 score=0.999 rewards=0.40,0.44,0.44
 
-[START] Task 3
-[STEP] Action: Hardware, Reward: 0.2
-[STEP] Action: Hardware, Reward: 0.2
-[STEP] Action: Software, Reward: 0.2
-[STEP] Action: Software, Reward: 0.2
-[STEP] Action: Network, Reward: 0.2
-[END] Final Score: 1.0
+[START] task=hard env=it-triage-env model=gpt-3.5-turbo
+[STEP] step=1 action=Hardware reward=0.29 done=false error=null
+[STEP] step=2 action=Hardware reward=0.33 done=false error=null
+[STEP] step=3 action=Software reward=0.33 done=false error=null
+[STEP] step=4 action=Software reward=0.33 done=false error=null
+[STEP] step=5 action=Network reward=0.33 done=true error=null
+[END] success=true steps=5 score=0.999 rewards=0.29,0.33,0.33,0.33,0.33
 ```
 
 ## File Structure
@@ -136,7 +136,11 @@ The inference script emits structured logs required by the validator:
 ├── openenv.yaml       # OpenEnv spec manifest
 ├── inference.py       # Baseline LLM evaluation script
 ├── requirements.txt   # Python dependencies
+├── pyproject.toml     # Python project metadata
 ├── Dockerfile         # Production container (port 7860)
+├── server/            # OpenEnv validator compat module
+│   ├── __init__.py
+│   └── app.py
 └── README.md          # This file
 ```
 
