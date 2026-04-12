@@ -129,13 +129,13 @@ def run_task(llm_client: OpenAI, task_id: str, task_number: int) -> float:
             )
             step_resp.raise_for_status()
             step_data = step_resp.json()
+            reward = step_data["reward"]
+            done = step_data["done"]
         except Exception as e:
             print(f"ERROR: step failed: {e}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
             break
 
-        reward = step_data["reward"]
-        done = step_data["done"]
         cumulative_reward += reward
 
         print(f"[STEP] Action: {action}, Reward: {reward}")
@@ -171,7 +171,8 @@ def main():
         print()
 
     avg = sum(scores) / len(scores)
-    print(f"Average Score: {avg:.4f}")
+    # Keep stdout to only [START]/[STEP]/[END] lines — some parsers reject extra stdout.
+    print(f"Average Score: {avg:.4f}", file=sys.stderr)
 
 
 if __name__ == "__main__":
